@@ -700,9 +700,9 @@
   }
 
   function repoListTemplate(repos) {
-    return repos.slice(0, 5).map((repo, index) => `
+    return repos.slice(0, 5).map((repo) => `
       <a class="ghg-repo" href="${escapeHtml(repo.href)}">
-        <span class="ghg-line-icon">${repo.private || index === 2 ? iconLock() : iconCode()}</span>
+        <span class="ghg-line-icon">${repo.private ? iconLock() : iconCode()}</span>
         <span>${escapeHtml(repo.name)}</span>
       </a>
     `).join('');

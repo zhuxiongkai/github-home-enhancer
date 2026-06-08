@@ -98,6 +98,7 @@ assert.doesNotMatch(source, /Repository activity synced to this workspace/);
 assert.doesNotMatch(source, /Repository activity appears on this timeline/);
 assert.doesNotMatch(source, /GitHub home content is organized in this timeline/);
 assert.doesNotMatch(source, /index \* 7 \+ 4/);
+assert.doesNotMatch(source, /repo\.private\s*\|\|\s*index\s*===\s*2/);
 assert.doesNotMatch(source, /detailKey/);
 assert.doesNotMatch(source, /href="https:\/\/github\.com\/organizations"/);
 assert.doesNotMatch(source, /settings\/organizations/);
