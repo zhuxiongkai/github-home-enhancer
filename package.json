@@ -1,0 +1,12 @@
+{
+  "name": "github-home-enhancer",
+  "version": "1.0.0",
+  "description": "将 GitHub 登录首页重排为工作台式三栏动态首页。",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node github-home-enhancer.user.test.mjs"
+  },
+  "author": "zhuxiongkai",
+  "license": "MIT"
+}
