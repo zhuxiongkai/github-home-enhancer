@@ -2,6 +2,8 @@
 
 适用于 [GitHub](https://github.com) 登录首页的 Tampermonkey / Violentmonkey 用户脚本，将默认首页重排为更清爽的工作台式三栏视图。
 
+项目地址: [https://github.com/zhuxiongkai/github-home-enhancer](https://github.com/zhuxiongkai/github-home-enhancer)
+
 ## 功能
 
 - **工作台布局**：把 GitHub 首页整理成左侧仓库、中间动态、右侧推荐的三栏结构。

@@ -58,10 +58,6 @@
       support: 'Support',
       changelog: 'Changelog',
       noPersonalActivity: 'No personal activity to show.',
-      loadingActivity: 'Loading real GitHub activity...',
-      noRealActivity: 'No real GitHub activity found.',
-      noMyRealActivity: 'No personal real GitHub activity found.',
-      unableActivity: 'Unable to load real GitHub activity.',
       pushedBranch: 'pushed to a branch',
       contributedRepo: 'contributed to a repository',
       updatedActivity: 'updated activity',
@@ -77,7 +73,9 @@
       minutesAgo: 'minutes ago',
       hoursAgo: 'hours ago',
       daysAgo: 'days ago',
+      monthsAgo: 'months ago',
       masterBranch: 'master branch',
+      noActivity: 'No activity to show.',
       realEventFallback: 'Real GitHub event',
     },
     zh: {
@@ -107,10 +105,6 @@
       support: '在线自助服务',
       changelog: '更新日志',
       noPersonalActivity: '暂无我的动态。',
-      loadingActivity: '正在加载真实 GitHub 动态...',
-      noRealActivity: '没有找到真实 GitHub 动态。',
-      noMyRealActivity: '没有找到我的真实 GitHub 动态。',
-      unableActivity: '无法加载真实 GitHub 动态。',
       pushedBranch: '推送到了分支',
       contributedRepo: '参与了仓库',
       updatedActivity: '更新了动态',
@@ -126,7 +120,9 @@
       minutesAgo: '分钟前',
       hoursAgo: '小时前',
       daysAgo: '天前',
+      monthsAgo: '个月前',
       masterBranch: 'master 分支',
+      noActivity: '暂无动态。',
       realEventFallback: '真实 GitHub 事件',
     },
   };
@@ -212,18 +208,39 @@
     });
   }
 
-  function repoFromLink(link) {
-    const name = compact(link.textContent).replace(/\s*Public\s*$/, '');
-    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/.test(name)) return null;
+  function repoFromLink(link, fallbackOwner = '') {
+    const textName = compact(link.textContent).replace(/\s*Public\s*$/, '');
+    const href = safeGithubUrl(link.href || link.getAttribute('href'));
+    let owner = '';
+    let repo = '';
+    try {
+      const url = new URL(href);
+      const parts = url.pathname.split('/').filter(Boolean);
+      [owner, repo] = parts;
+    } catch (error) {
+      return null;
+    }
+
+    const textParts = textName.includes('/') ? textName.split('/') : [];
+    if (textParts.length >= 2) {
+      owner = textParts[0];
+      repo = textParts.slice(1).join('/');
+    } else if (fallbackOwner && textName) {
+      owner = fallbackOwner;
+      repo = textName;
+    }
+
+    if (!owner || !repo || !/^[A-Za-z0-9_.-]+$/.test(owner) || !/^[A-Za-z0-9_.-]+$/.test(repo)) return null;
+    const name = `${owner}/${repo}`;
     const container = link.closest('li') || link.parentElement;
     const isPrivate = Boolean(
       container?.querySelector('svg.octicon-lock, [aria-label*="Private"], [aria-label*="private"]')
     ) || /\bPrivate\b/i.test(compact(container?.textContent || ''));
     return {
       name,
-      href: safeGithubUrl(link.href),
-      owner: name.split('/')[0],
-      repo: name.split('/').slice(1).join('/'),
+      href,
+      owner,
+      repo,
       avatar: link.querySelector('img')?.src || '',
       private: isPrivate,
     };
@@ -241,27 +258,135 @@
     return repos.length ? repos : fallbackRepos;
   }
 
-  function collectDashboardFeedItems(repos, userName) {
-    const feedNodes = Array.from(document.querySelectorAll([
-      '#dashboard .TimelineItem',
-      '#dashboard .Box-row',
-      '#dashboard article',
-      '.js-feed-item',
+  async function fetchRecentUserRepos(userName) {
+    if (!userName || userName === 'GitHub') return [];
+    const response = await fetch(safeGithubUrl(`/${userName}?tab=repositories&sort=updated`), { credentials: 'same-origin' });
+    if (!response.ok) {
+      throw new Error(`GitHub repositories page request failed for ${userName}: ${response.status}`);
+    }
+
+    const html = await response.text();
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const links = Array.from(doc.querySelectorAll([
+      'a[itemprop="name codeRepository"]',
+      'a[data-hovercard-type="repository"]',
+      'h3 a[href^="/"]',
     ].join(',')));
 
-    const collected = feedNodes
-      .map((node) => compact(node.innerText || node.textContent))
-      .filter((text) => text && !/That'?s all for now|feed filter|Footer navigation/i.test(text))
-      .map((text, index) => ({
-        actor: text.includes(userName) ? userName : (repos[index % repos.length]?.owner || userName),
-        kind: 'sync',
-        title: text.slice(0, 90),
-        detail: text.slice(90, 210),
-        dateLabel: dateDaysAgo(index * 10),
-      }))
-      .slice(0, 8);
+    return uniqueBy(links.map((link) => repoFromLink(link, userName)).filter(Boolean), (repo) => repo.name).slice(0, 10);
+  }
 
-    return collected;
+  function mergeRepos(primary, secondary) {
+    const merged = uniqueBy([...(primary || []), ...(secondary || [])], (repo) => repo.name);
+    return merged.length ? merged.slice(0, 12) : fallbackRepos;
+  }
+
+  function usersFromRepos(repos, userName, avatar) {
+    return uniqueBy(repos.map((repo) => ({
+      name: repo.owner,
+      href: safeGithubUrl(`/${repo.owner}`),
+      source: repo.name,
+      avatar: repo.owner === userName
+        ? (avatar || repo.avatar || githubAvatarUrl(repo.owner))
+        : (repo.avatar || githubAvatarUrl(repo.owner)),
+    })), (user) => user.name).slice(0, 5);
+  }
+
+  function dashboardVerbKey(text) {
+    const value = compact(text).toLowerCase();
+    if (/pushed|push/.test(value)) return 'pushedBranch';
+    if (/pull request|merged|opened a pull|closed a pull/.test(value)) return 'pullRequestEvent';
+    if (/issue/.test(value)) return 'issueEvent';
+    if (/fork/.test(value)) return 'forkEvent';
+    if (/starred|star/.test(value)) return 'starEvent';
+    if (/release/.test(value)) return 'releaseEvent';
+    if (/comment/.test(value)) return 'commentEvent';
+    if (/created/.test(value)) return 'createdRef';
+    if (/deleted/.test(value)) return 'deletedRef';
+    return 'updatedActivity';
+  }
+
+  function parseDashboardFeedItems(userName) {
+    const feedNodes = Array.from(document.querySelectorAll([
+      '#dashboard .TimelineItem',
+      '.feed-background .TimelineItem',
+      '.js-feed-item-group .TimelineItem',
+    ].join(',')));
+
+    return feedNodes
+      .map((node, index) => {
+        const text = compact(node.innerText || node.textContent);
+        if (!text || /That'?s all for now|feed filter|Footer navigation|Show more activity/i.test(text)) return null;
+
+        const actorLink = node.querySelector([
+          'a[data-hovercard-type="user"]',
+          '.author',
+          '.TimelineItem-badge a[href^="/"]',
+        ].join(','));
+        const actor = compact(actorLink?.textContent).replace(/^@/, '')
+          || actorLink?.pathname?.replace(/^\//, '').split('/')[0]
+          || userName;
+
+        const avatarImg = node.querySelector('.TimelineItem-badge img, img.avatar');
+        const timeEl = node.querySelector('relative-time, time[datetime]');
+        const createdAt = timeEl?.getAttribute('datetime') || timeEl?.dateTime || '';
+
+        const repoLink = node.querySelector('a[data-hovercard-type="repository"], a[href*="/"][href*="/commit/"]');
+        let repoName = '';
+        if (repoLink) {
+          try {
+            const parts = new URL(repoLink.href, location.origin).pathname.split('/').filter(Boolean);
+            if (parts.length >= 2) repoName = `${parts[0]}/${parts[1]}`;
+          } catch (error) {
+            repoName = '';
+          }
+        }
+
+        const commitLink = node.querySelector('a[href*="/commit/"]');
+        const sha = commitLink ? compact(commitLink.textContent).slice(0, 7) : '';
+        const commitMessage = node.querySelector('.markdown-title, .commit-desc, .wb-break-all')?.textContent
+          || node.querySelector('p, .color-fg-muted + div')?.textContent
+          || '';
+
+        const summaryEl = node.querySelector('.TimelineItem-body > div, .color-fg-muted');
+        const summaryText = compact(summaryEl?.textContent || text);
+        const verbKey = dashboardVerbKey(summaryText);
+
+        let refTitle = '';
+        const refMatch = summaryText.match(/(?:to|in|on)\s+([\w./-]+)/i);
+        if (refMatch) refTitle = refMatch[1];
+
+        const detail = compact(commitMessage)
+          || compact(node.querySelector('.f6, .text-small')?.textContent)
+          || summaryText.replace(actor, '').slice(0, 120)
+          || t('realEventFallback');
+
+        return {
+          id: `dashboard-${createdAt || index}-${actor}-${repoName || sha || text.slice(0, 40)}`,
+          actor,
+          actorAvatar: avatarImg?.src || githubAvatarUrl(actor),
+          createdAt: createdAt || new Date(Date.now() - index * 3_600_000).toISOString(),
+          dateLabel: eventDateLabel(createdAt),
+          href: commitLink?.href || repoLink?.href || actorLink?.href || 'https://github.com/',
+          kind: sha ? 'push' : 'event',
+          sha,
+          title: repoName ? (refTitle ? `${repoName} / ${refTitle}` : repoName) : summaryText.slice(0, 80),
+          detail,
+          verbKey,
+          source: 'dashboard',
+        };
+      })
+      .filter((item) => item && item.actor)
+      .slice(0, 30);
+  }
+
+  function mergeFeedItems(...groups) {
+    return uniqueBy(
+      groups.flat().filter((item) => item && item.actor),
+      (item) => item.id || `${item.actor}|${item.createdAt}|${item.title}|${item.detail}`,
+    )
+      .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+      .slice(0, 40);
   }
 
   function apiRepoEventsUrl(repo) {
@@ -373,7 +498,9 @@
     if (minutes < 60) return `${minutes} ${t('minutesAgo')}`;
     const hours = Math.floor(minutes / 60);
     if (hours < 24) return `${hours} ${t('hoursAgo')}`;
-    return `${Math.floor(hours / 24)} ${t('daysAgo')}`;
+    const days = Math.floor(hours / 24);
+    if (days < 30) return `${days} ${t('daysAgo')}`;
+    return `${Math.floor(days / 30)} ${t('monthsAgo')}`;
   }
 
   function refName(ref) {
@@ -476,42 +603,36 @@
   }
 
   async function loadRealActivity(data) {
-    const activityPages = await Promise.allSettled(data.repos.slice(0, 10).map(fetchRepoActivityItems));
+    const dashboardItems = parseDashboardFeedItems(data.userName);
+    data.dashboardFeedItems = dashboardItems;
+    const recentRepos = await fetchRecentUserRepos(data.userName).catch((error) => {
+      console.debug(`${LOG_PREFIX} failed to load recent repositories`, error);
+      return [];
+    });
+    const repos = mergeRepos(recentRepos, data.repos);
+    const activityRepos = repos.slice(0, 12);
+
+    const activityPages = await Promise.allSettled(activityRepos.map(fetchRepoActivityItems));
     const pageItems = activityPages
       .filter((result) => result.status === 'fulfilled')
       .flatMap((result) => result.value)
       .filter((item) => item.actor && item.createdAt);
 
-    const uniquePageItems = uniqueBy(pageItems, (item) => item.id)
-      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-      .slice(0, 20);
-
-    if (uniquePageItems.length) {
-      return { status: 'ready', items: uniquePageItems };
-    }
-
-    const repoEvents = await Promise.allSettled(data.repos.slice(0, 10).map(fetchRepoEvents));
-    const events = repoEvents
+    const repoEvents = await Promise.allSettled(activityRepos.map(fetchRepoEvents));
+    const apiItems = repoEvents
       .filter((result) => result.status === 'fulfilled')
       .flatMap((result) => result.value)
       .map(eventToFeedItem)
       .filter((item) => item.actor && item.createdAt);
 
-    const uniqueEvents = uniqueBy(events, (item) => item.id)
-      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-      .slice(0, 20);
-
-    if (uniqueEvents.length) {
-      return { status: 'ready', items: uniqueEvents };
-    }
-
-    if (data.dashboardFeedItems.length) {
-      return { status: 'ready', items: data.dashboardFeedItems };
+    const items = mergeFeedItems(dashboardItems, pageItems, apiItems).slice(0, 40);
+    if (items.length) {
+      return { status: 'ready', items, repos };
     }
 
     const hadErrors = activityPages.some((result) => result.status === 'rejected')
       || repoEvents.some((result) => result.status === 'rejected');
-    return { status: hadErrors ? 'error' : 'empty', items: [] };
+    return { status: hadErrors ? 'error' : 'empty', items: [], repos };
   }
 
   function dateDaysAgo(days) {
@@ -531,23 +652,16 @@
     const avatar = document.querySelector('img.avatar, img[src*="avatars.githubusercontent.com"]');
     const loginMeta = document.querySelector('meta[name="user-login"]')?.content;
     const userName = loginMeta || compact(avatar?.alt).replace(/^@/, '') || repos[0]?.owner || 'GitHub';
-    const dashboardFeedItems = collectDashboardFeedItems(repos, userName);
+    const dashboardFeedItems = parseDashboardFeedItems(userName);
 
     return {
       userName,
       avatar: avatar?.src || '',
       repos,
-      users: uniqueBy(repos.map((repo) => ({
-        name: repo.owner,
-        href: safeGithubUrl(`/${repo.owner}`),
-        source: repo.name,
-        avatar: repo.owner === userName
-          ? (avatar?.src || repo.avatar || githubAvatarUrl(repo.owner))
-          : (repo.avatar || githubAvatarUrl(repo.owner)),
-      })), (user) => user.name).slice(0, 5),
-      feedItems: [],
+      users: usersFromRepos(repos, userName, avatar?.src || ''),
+      feedItems: dashboardFeedItems,
       dashboardFeedItems,
-      activityStatus: 'loading',
+      activityStatus: dashboardFeedItems.length ? 'ready' : 'loading',
       repoCount: repos.length,
       today: dateDaysAgo(0),
     };
@@ -565,6 +679,11 @@
     loadRealActivity(data)
       .then((result) => {
         if (requestId !== activityRequestId || key !== lastDataKey || !lastData) return;
+        if (result.repos?.length) {
+          lastData.repos = result.repos;
+          lastData.repoCount = result.repos.length;
+          lastData.users = usersFromRepos(result.repos, lastData.userName, lastData.avatar);
+        }
         lastData.feedItems = result.items;
         lastData.activityStatus = result.status;
         activityLoadKey = '';
@@ -594,55 +713,106 @@
     return `<img src="${escapeHtml(avatar)}" alt="">`;
   }
 
+  function repoHref(repoTitle) {
+    const parts = String(repoTitle || '').split('/').filter(Boolean);
+    if (parts.length >= 2) {
+      return safeGithubUrl(`/${parts[0]}/${parts[1]}`);
+    }
+    if (parts.length === 1) {
+      return safeGithubUrl(`/${parts[0]}`);
+    }
+    return 'https://github.com/';
+  }
+
+  function repoRefHtml(repoTitle, refTitle) {
+    const branch = refTitle || 'master';
+    const repoLink = `<a class="ghg-event-repo" href="${escapeHtml(repoHref(repoTitle))}">${escapeHtml(repoTitle)}</a>`;
+    return isChineseLocale()
+      ? `${repoLink} 的 ${escapeHtml(branch)} 分支`
+      : `${repoLink} / ${escapeHtml(branch)}`;
+  }
+
+  function eventCardTemplate(item, href) {
+    const titleParts = String(item.title || '').split(' / ');
+    const repoTitle = titleParts[0] || item.title || 'GitHub';
+    const refTitle = titleParts.slice(1).join(' / ');
+    const detail = item.detail || t('realEventFallback');
+    const repoUrl = repoHref(repoTitle);
+
+    if (item.kind === 'push' || item.sha) {
+      return `
+        <div class="ghg-event-card">
+          <div class="ghg-event-ref">${repoRefHtml(repoTitle, refTitle)}</div>
+          <a class="ghg-event-commit" href="${escapeHtml(href)}">
+            <span class="ghg-commit-icon">${iconCode()}</span>
+            ${item.sha ? `<code>${escapeHtml(item.sha)}</code>` : ''}
+            <span>${escapeHtml(detail)}</span>
+          </a>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="ghg-event-card ghg-event-card-link">
+        <span class="ghg-event-repo-icon">${iconCode()}</span>
+        <span class="ghg-event-card-text">
+          <a class="ghg-event-repo" href="${escapeHtml(repoUrl)}">${escapeHtml(repoTitle)}</a>
+          <a class="ghg-event-detail" href="${escapeHtml(href)}">${escapeHtml(detail)}</a>
+        </span>
+      </div>
+    `;
+  }
+
   function timelineTemplate(data, mode = 'all') {
     let lastDate = '';
     const items = mode === 'mine'
       ? data.feedItems.filter((item) => item.actor === data.userName)
       : data.feedItems;
 
-    if (data.activityStatus === 'loading') {
-      return `<li class="ghg-empty">${escapeHtml(t('loadingActivity'))}</li>`;
-    }
-
-    if (data.activityStatus === 'error') {
-      return `<li class="ghg-empty">${escapeHtml(t('unableActivity'))}</li>`;
+    if (data.activityStatus === 'loading' && !items.length) {
+      return `
+        ${Array.from({ length: 3 }, () => `
+          <li class="ghg-timeline-item ghg-skeleton-item" aria-hidden="true">
+            <div class="ghg-event-head ghg-skeleton-meta">
+              <span class="ghg-skeleton-avatar"></span>
+              <span></span>
+              <span></span>
+              <span></span>
+            </div>
+            <div class="ghg-event-card ghg-skeleton-card">
+              <span class="ghg-skeleton-line ghg-skeleton-line-lg"></span>
+              <span class="ghg-skeleton-line ghg-skeleton-line-sm"></span>
+            </div>
+          </li>
+        `).join('')}
+      `;
     }
 
     if (!items.length) {
-      return `<li class="ghg-empty">${escapeHtml(mode === 'mine' ? t('noMyRealActivity') : t('noRealActivity'))}</li>`;
+      const message = mode === 'mine' ? t('noPersonalActivity') : t('noActivity');
+      return `<li class="ghg-empty">${escapeHtml(message)}</li>`;
     }
 
     return items.map((item) => {
       const verb = item.verbKey ? t(item.verbKey) : item.kind === 'push' ? t('pushedBranch') : item.kind === 'repo' ? t('contributedRepo') : t('updatedActivity');
       const href = item.href ? safeGithubUrl(item.href) : 'https://github.com/';
       const actor = item.actor || data.userName;
-      const detail = item.detail || t('realEventFallback');
       const dateBlock = item.dateLabel !== lastDate
-        ? `<li class="ghg-date"><span>${escapeHtml(item.dateLabel || data.today)}</span></li>`
+        ? `<li class="ghg-date-node"><span class="ghg-date-dot" aria-hidden="true"></span><time>${escapeHtml(item.dateLabel || data.today)}</time></li>`
         : '';
       lastDate = item.dateLabel;
       return `
         ${dateBlock}
         <li class="ghg-timeline-item">
-          <span class="ghg-timeline-dot"></span>
-          <a class="ghg-event-avatar" href="https://github.com/${encodeURIComponent(actor)}">
-            ${eventAvatarTemplate(item, data)}
-          </a>
-          <div class="ghg-timeline-content">
-            <div class="ghg-timeline-meta">
-              <strong>${escapeHtml(actor)}</strong>
-              <span>${escapeHtml(verb)}</span>
-              <em>${escapeHtml(item.createdAt ? relativeTime(item.createdAt) : t('justNow'))}</em>
-            </div>
-            <div class="ghg-timeline-card">
-              <p>${escapeHtml(item.title)}</p>
-              <a class="ghg-commit" href="${escapeHtml(href)}">
-                <span class="ghg-commit-icon">${iconCode()}</span>
-                <b>${escapeHtml(item.sha || '117edd8')}</b>
-                <span>${escapeHtml(detail)}</span>
-              </a>
-            </div>
+          <div class="ghg-event-head">
+            <a class="ghg-event-avatar" href="https://github.com/${encodeURIComponent(actor)}">
+              ${eventAvatarTemplate(item, data)}
+            </a>
+            <a class="ghg-event-user" href="https://github.com/${encodeURIComponent(actor)}">${escapeHtml(actor)}</a>
+            <span class="ghg-event-verb">${escapeHtml(verb)}</span>
+            <time class="ghg-event-time">${escapeHtml(item.createdAt ? relativeTime(item.createdAt) : t('justNow'))}</time>
           </div>
+          ${eventCardTemplate(item, href)}
         </li>
       `;
     }).join('');
@@ -759,9 +929,14 @@
     `;
 
     root.querySelectorAll('[data-feed-mode]').forEach((button) => {
+      const active = button.dataset.feedMode === currentFeedMode;
+      button.classList.toggle('is-active', active);
       button.addEventListener('click', () => {
         currentFeedMode = button.dataset.feedMode === 'mine' ? 'mine' : 'all';
         root.querySelector('.ghg-feed-current').textContent = currentFeedMode === 'mine' ? t('myActivity') : t('allActivity');
+        root.querySelectorAll('[data-feed-mode]').forEach((entry) => {
+          entry.classList.toggle('is-active', entry.dataset.feedMode === currentFeedMode);
+        });
         root.querySelector('[data-ghg-timeline]').innerHTML = timelineTemplate(data, currentFeedMode);
         root.querySelector('.ghg-feed-select').removeAttribute('open');
       });
@@ -779,7 +954,7 @@
       body.${ACTIVE_CLASS} #${ROOT_ID} ~ .application-main .feed-background { display: none !important; }
       #${ROOT_ID}, #${ROOT_ID} * { box-sizing: border-box; }
       #${ROOT_ID} { min-height: calc(100vh - 64px); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, "Microsoft YaHei", sans-serif; color: #1f2328; background: #ffffff; }
-      #${ROOT_ID} a { color: inherit; text-decoration: none; }
+      #${ROOT_ID} a { text-decoration: none; }
       .ghg-panel a:hover, .ghg-footer a:hover, .ghg-links a:hover, .ghg-repo:hover, .ghg-work-stats a:hover { color: #0969da; }
       .ghg-shell { display: grid; grid-template-columns: 304px minmax(620px, 1fr) 328px; min-height: calc(100vh - 64px); border-top: 1px solid #d0d7de; }
       .ghg-left { position: sticky; top: 0; height: 100vh; overflow: auto; padding: 24px 16px 28px 24px; border-right: 1px solid #d0d7de; background: #f6f8fa; }
@@ -791,7 +966,9 @@
       .ghg-left-row i, .ghg-line-icon, .ghg-work-stats i { width: 22px; margin-right: 8px; color: #6e7781; font-style: normal; text-align: center; white-space: nowrap; flex: 0 0 22px; }
       .ghg-left-row svg, .ghg-line-icon svg, .ghg-work-stats svg, .ghg-commit-icon svg { width: 16px; height: 16px; fill: currentColor; vertical-align: text-bottom; }
       .ghg-left-row strong, .ghg-work-stats strong { min-width: 18px; height: 18px; display: inline-grid; place-items: center; padding: 0 5px; border-radius: 9px; background: #eaeef2; color: #57606a; font-size: 12px; font-weight: 600; }
-      .ghg-left-row.is-active, .ghg-left-row:hover { color: #0969da; background: #ffffff; }
+      .ghg-left-row.is-active { background: #ffffff; color: #1f2328; }
+      .ghg-left-row:hover { color: #0969da; background: #ffffff; }
+      .ghg-left-row:hover i { color: #0969da; }
       .ghg-repo-list { position: relative; display: grid; gap: 8px; margin-left: 16px; padding-left: 22px; border-left: 1px solid #d8dee4; }
       .ghg-repo { min-height: 32px; display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: center; border-radius: 6px; color: #1f2328; font-weight: 600; }
       .ghg-repo span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -801,29 +978,53 @@
       .ghg-work-stats a { display: flex; justify-content: space-between; align-items: center; min-height: 34px; padding: 0 10px; border-radius: 6px; color: #1f2328; font-size: 15px; }
       .ghg-work-stats a span { display: inline-flex; align-items: center; min-width: 0; }
       .ghg-work-stats a:hover { background: #fff; color: #0969da; }
-      .ghg-main { padding: 30px 40px 56px 56px; min-width: 0; }
-      .ghg-main-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 30px; }
-      .ghg-main h1 { margin: 0; color: #000; font-size: 24px; line-height: 32px; font-weight: 800; }
+      .ghg-main { padding: 26px 38px 48px 46px; min-width: 0; }
+      .ghg-main-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+      .ghg-main h1 { margin: 0; color: #1f2328; font-size: 22px; line-height: 30px; font-weight: 750; }
       .ghg-main-head a { height: 32px; display: inline-flex; align-items: center; padding: 0 14px; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; color: #1f2328; font: inherit; }
-      .ghg-timeline { --ghg-line-x: 22px; position: relative; margin: 0; padding: 0 0 0 58px; list-style: none; }
-      .ghg-timeline::before { content: ""; position: absolute; top: 12px; bottom: 0; left: var(--ghg-line-x); width: 1px; background: #d8dee4; }
-      .ghg-date { position: relative; margin: 28px 0 28px; color: #2f3337; font-size: 18px; font-weight: 800; }
-      .ghg-date:first-child { margin-top: 0; }
-      .ghg-date::before { content: ""; position: absolute; left: calc(var(--ghg-line-x) - 58px - 6px); top: 9px; width: 7px; height: 7px; border-radius: 50%; background: #fff; border: 3px solid #0969da; }
-      .ghg-timeline-item { position: relative; display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 14px; margin-bottom: 28px; }
-      .ghg-timeline-dot { display: none; }
-      .ghg-event-avatar, .ghg-event-avatar img, .ghg-event-avatar span { width: 36px !important; height: 36px !important; border-radius: 50%; object-fit: cover; background: #d9d9d9; }
-      .ghg-event-avatar span { display: grid; place-items: center; background: #57606a; color: #fff; font-weight: 700; }
-      .ghg-timeline-content { min-width: 0; }
-      .ghg-timeline-card { max-width: none; margin-top: 12px; padding: 18px 20px; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; }
-      .ghg-timeline-card p { margin: 0 0 12px; color: #6b7280; }
-      .ghg-timeline-meta { display: flex; align-items: center; gap: 8px; color: #57606a; font-size: 15px; }
-      .ghg-timeline-meta strong { color: #1f2328; }
-      .ghg-timeline-meta em { font-style: normal; color: #57606a; }
-      .ghg-commit { display: flex; align-items: center; gap: 12px; min-width: 0; color: #1f2328; }
-      .ghg-commit-icon { width: 20px; color: #57606a; text-align: center; }
-      .ghg-commit b { color: #0969da; font-weight: 700; }
-      .ghg-commit span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .ghg-timeline { --ghg-rail: 5px; position: relative; margin: 0; padding: 4px 0 0 calc(var(--ghg-rail) + 20px); list-style: none; }
+      .ghg-timeline::before { content: ''; position: absolute; left: var(--ghg-rail); top: 0; bottom: 0; width: 2px; transform: translateX(-50%); background: #e8edf3; }
+      .ghg-date-node { position: relative; z-index: 1; display: flex; align-items: center; gap: 12px; margin: 18px 0 10px calc(-1 * (var(--ghg-rail) + 20px)); list-style: none; }
+      .ghg-date-node:first-child { margin-top: 0; }
+      .ghg-date-dot { width: 10px; height: 10px; flex: 0 0 10px; border: 2px solid #4c84ff; border-radius: 50%; background: #fff; box-shadow: 0 0 0 2px #fff; }
+      .ghg-date-node time { color: #1f2328; font-size: 14px; font-weight: 600; }
+      .ghg-timeline-item { margin: 0 0 16px; padding: 0; list-style: none; }
+      .ghg-event-head { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
+      .ghg-event-avatar, .ghg-event-avatar img { width: 22px !important; height: 22px !important; border-radius: 50%; object-fit: cover; background: #e8edf3; flex: 0 0 22px; }
+      .ghg-event-user { color: #1f2328; font-weight: 600; font-size: 14px; }
+      .ghg-event-user:hover { color: #0969da; }
+      .ghg-event-verb { color: #8b949e; font-size: 13px; }
+      .ghg-event-time { margin-left: auto; color: #8b949e; font-size: 12px; white-space: nowrap; }
+      .ghg-event-card { margin-top: 8px; padding: 10px 12px; border-radius: 6px; background: #f5f6f8; }
+      .ghg-event-card-link { display: flex; align-items: flex-start; gap: 8px; color: #1f2328; }
+      .ghg-event-card-link:hover { background: #eef1f5; }
+      .ghg-event-ref { margin-bottom: 6px; color: #57606a; font-size: 13px; }
+      .ghg-event-repo { color: #0969da; font-weight: 600; }
+      .ghg-event-repo:hover { text-decoration: underline; }
+      .ghg-event-detail { color: #57606a; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .ghg-event-detail:hover { color: #0969da; text-decoration: underline; }
+      .ghg-event-commit { display: flex; align-items: center; gap: 8px; min-width: 0; color: #1f2328; font-size: 13px; }
+      .ghg-event-commit:hover code { text-decoration: underline; }
+      .ghg-commit-icon, .ghg-event-repo-icon { width: 16px; color: #8b949e; flex: 0 0 16px; }
+      .ghg-event-commit code { color: #0969da; font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; font-weight: 600; }
+      .ghg-event-commit span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #57606a; }
+      .ghg-event-card-text { min-width: 0; display: grid; gap: 2px; }
+      .ghg-event-card-text .ghg-event-repo { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+      .ghg-skeleton-item { pointer-events: none; }
+      .ghg-skeleton-avatar { width: 22px; height: 22px; border-radius: 50%; background: linear-gradient(90deg, #eaeef2 25%, #f6f8fa 37%, #eaeef2 63%); background-size: 400% 100%; animation: ghg-shimmer 1.4s ease infinite; flex: 0 0 22px; }
+      .ghg-skeleton-meta { display: flex; align-items: center; gap: 8px; min-height: 22px; }
+      .ghg-skeleton-meta span { height: 12px; border-radius: 999px; background: linear-gradient(90deg, #eaeef2 25%, #f6f8fa 37%, #eaeef2 63%); background-size: 400% 100%; animation: ghg-shimmer 1.4s ease infinite; }
+      .ghg-skeleton-meta span:nth-child(2) { width: 72px; }
+      .ghg-skeleton-meta span:nth-child(3) { width: 88px; }
+      .ghg-skeleton-meta span:nth-child(4) { width: 48px; margin-left: auto; }
+      .ghg-skeleton-card { display: grid; gap: 8px; margin-top: 8px; }
+      .ghg-skeleton-line { display: block; height: 12px; border-radius: 999px; background: linear-gradient(90deg, #eaeef2 25%, #f6f8fa 37%, #eaeef2 63%); background-size: 400% 100%; animation: ghg-shimmer 1.4s ease infinite; }
+      .ghg-skeleton-line-lg { width: 58%; }
+      .ghg-skeleton-line-sm { width: 82%; }
+      @keyframes ghg-shimmer {
+        0% { background-position: 100% 0; }
+        100% { background-position: 0 0; }
+      }
       .ghg-right { padding: 30px 28px 40px 14px; overflow: auto; }
       .ghg-panel { margin-bottom: 30px; }
       .ghg-panel-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
@@ -834,17 +1035,21 @@
       .ghg-user-link { color: #1f2328 !important; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .ghg-user-link:hover { color: #0969da !important; text-decoration: underline !important; }
       .ghg-follow-avatar, .ghg-follow-avatar img, .ghg-follow-avatar span { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 50%; background: #57606a; color: #fff; font-size: 20px; font-weight: 700; object-fit: cover; }
-      .ghg-suggest-repo { display: grid; grid-template-columns: minmax(0, 1fr) 72px; gap: 10px; padding: 8px 0; color: #57606a; }
+      .ghg-suggest-repo { display: grid; grid-template-columns: minmax(0, 1fr) 72px; gap: 10px; margin: 0 -10px; padding: 8px 10px; border-radius: 6px; color: #57606a; }
       .ghg-suggest-repo span { min-width: 0; display: grid; }
       .ghg-suggest-repo strong { color: #666; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .ghg-suggest-repo em { color: #57606a; font-style: normal; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .ghg-suggest-repo b { color: #57606a; font-size: 12px; font-weight: 500; text-align: right; }
+      .ghg-suggest-repo:hover { color: #0969da; background: #f6f8fa; }
+      .ghg-suggest-repo:hover strong, .ghg-suggest-repo:hover b { color: #0969da; }
       .ghg-links { display: flex; flex-wrap: wrap; gap: 8px 10px; padding: 16px 0; border-top: 1px solid #d8dee4; border-bottom: 1px solid #d8dee4; color: #57606a; }
+      .ghg-links a { color: #57606a; }
       .ghg-links a::after { content: "·"; margin-left: 10px; color: #c8cdd2; }
       .ghg-links a:last-child::after { content: ""; margin: 0; }
       .ghg-footer { display: flex; flex-wrap: wrap; gap: 8px 10px; margin-top: 16px; color: #57606a; font-size: 13px; }
+      .ghg-footer a { color: #57606a; }
       .ghg-footer span { flex-basis: 100%; margin-top: 8px; }
-      .ghg-empty { padding: 24px; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; color: #57606a; list-style: none; }
+      .ghg-empty { margin: 0; padding: 32px 16px; border-radius: 6px; background: #f5f6f8; color: #8b949e; text-align: center; font-size: 14px; list-style: none; }
       .ghg-feed-select { position: relative; }
       .ghg-feed-select summary { height: 32px; min-width: 118px; display: inline-flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 12px; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; color: #1f2328; cursor: pointer; list-style: none; line-height: 1; }
       .ghg-feed-select summary::-webkit-details-marker { display: none; }
@@ -853,7 +1058,8 @@
       .ghg-feed-chevron svg { display: block; width: 12px; height: 12px; fill: currentColor; }
       .ghg-feed-menu { position: absolute; top: 38px; right: 0; z-index: 10; width: 140px; padding: 6px; border: 1px solid #d0d7de; border-radius: 6px; background: #fff; box-shadow: 0 8px 24px rgba(140,149,159,0.2); }
       .ghg-feed-menu button { width: 100%; height: 34px; display: block; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: #1f2328; text-align: left; font: inherit; cursor: pointer; }
-      .ghg-feed-menu button:hover { background: #f6f8fa; color: #0969da; }
+      .ghg-feed-menu button:hover, .ghg-feed-menu button.is-active { background: #f0f6ff; color: #0969da; }
+      .ghg-feed-menu button.is-active { font-weight: 600; }
       @media (max-width: 1180px) {
         .ghg-shell { grid-template-columns: 280px minmax(420px, 1fr); }
         .ghg-right { display: none; }
@@ -885,6 +1091,13 @@
     const data = collectGithubData();
     const key = dataKey(data);
     if (lastData && lastDataKey === key && document.getElementById(ROOT_ID)) {
+      const freshDashboard = parseDashboardFeedItems(lastData.userName);
+      if (freshDashboard.length > (lastData.dashboardFeedItems?.length || 0)) {
+        lastData.dashboardFeedItems = freshDashboard;
+        lastData.feedItems = mergeFeedItems(freshDashboard, lastData.feedItems);
+        lastData.activityStatus = 'ready';
+        activityLoadKey = '';
+      }
       renderWorkbench(lastData);
       if (lastData.activityStatus === 'loading') loadActivityFor(lastData, key);
       return;
