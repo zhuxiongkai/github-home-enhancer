@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { Script } from 'node:vm';
+import vm from 'node:vm';
 
 const scriptPath = new URL('./github-home-enhancer.user.js', import.meta.url);
 const source = await readFile(scriptPath, 'utf8');
@@ -118,5 +119,95 @@ assert.doesNotMatch(source, /合并为最新版/);
 assert.doesNotMatch(source, /4953 - index/);
 
 new Script(source, { filename: 'github-home-enhancer.user.js' });
+
+function textNode(text, options = {}) {
+  return {
+    textContent: text,
+    innerText: text,
+    href: options.href || '',
+    pathname: options.pathname || '',
+    src: options.src || '',
+    dateTime: options.dateTime || '',
+    getAttribute(name) {
+      return options.attributes?.[name] || '';
+    },
+    querySelector() {
+      return null;
+    },
+  };
+}
+
+function timelineNode(text, selectors = {}) {
+  return {
+    textContent: text,
+    innerText: text,
+    querySelector(selector) {
+      return Object.entries(selectors).find(([pattern]) => selector.includes(pattern))?.[1] || null;
+    },
+  };
+}
+
+function loadHarness(feedNodes) {
+  const harnessSource = source.replace(
+    'scheduleBoot();',
+    'globalThis.__githubHomeEnhancerHarness = { parseDashboardFeedItems }; scheduleBoot();',
+  );
+
+  const sandbox = {
+    console,
+    URL,
+    Date,
+    location: { origin: 'https://github.com', pathname: '/' },
+    window: {
+      setTimeout() {},
+      addEventListener() {},
+    },
+    MutationObserver: class {
+      observe() {}
+    },
+    document: {
+      documentElement: { lang: 'zh-CN' },
+      body: { classList: { remove() {}, add() {} } },
+      querySelectorAll(selector) {
+        return selector.includes('.TimelineItem') ? feedNodes : [];
+      },
+      querySelector() {
+        return null;
+      },
+      getElementById() {
+        return null;
+      },
+    },
+  };
+
+  vm.createContext(sandbox);
+  vm.runInContext(harnessSource, sandbox, { filename: 'github-home-enhancer.user.js' });
+  return sandbox.__githubHomeEnhancerHarness;
+}
+
+const dateOnlyTimelineItem = timelineNode('2026年6月9日');
+const pushTimelineItem = timelineNode(
+  'zhuxiongkai pushed to main in zhuxiongkai/github-home-enhancer 533e3f1 Enhance GitHub Home Enhancer',
+  {
+    'a[data-hovercard-type="user"]': textNode('zhuxiongkai', { pathname: '/zhuxiongkai' }),
+    'relative-time': textNode('', { attributes: { datetime: '2026-06-09T12:00:00Z' } }),
+    'a[data-hovercard-type="repository"]': textNode('zhuxiongkai/github-home-enhancer', {
+      href: 'https://github.com/zhuxiongkai/github-home-enhancer',
+    }),
+    'a[href*="/commit/"]': textNode('533e3f1', {
+      href: 'https://github.com/zhuxiongkai/github-home-enhancer/commit/533e3f1',
+    }),
+    '.markdown-title': textNode('Enhance GitHub Home Enhancer'),
+    '.TimelineItem-body > div': textNode('zhuxiongkai pushed to main in zhuxiongkai/github-home-enhancer'),
+  },
+);
+
+const { parseDashboardFeedItems } = loadHarness([dateOnlyTimelineItem, pushTimelineItem]);
+const parsedDashboardItems = parseDashboardFeedItems('zhuxiongkai');
+
+assert.equal(parsedDashboardItems.length, 1);
+assert.equal(parsedDashboardItems[0].sha, '533e3f1');
+assert.equal(parsedDashboardItems[0].title, 'zhuxiongkai/github-home-enhancer / main');
+assert.doesNotMatch(parsedDashboardItems.map((item) => item.title).join('\n'), /^2026年6月9日$/m);
 
 console.log('github-home-enhancer userscript contract ok');

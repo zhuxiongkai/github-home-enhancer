@@ -306,6 +306,15 @@
     return 'updatedActivity';
   }
 
+  function isDashboardDateSeparator(text) {
+    const value = compact(text);
+    if (!value) return false;
+
+    return /^(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{4}年\d{1,2}月\d{1,2}日?)$/i.test(value)
+      || /^[a-z]{3,9}\s+\d{1,2},?\s+\d{4}$/i.test(value)
+      || /^\d{1,2}\s+[a-z]{3,9}\s+\d{4}$/i.test(value);
+  }
+
   function parseDashboardFeedItems(userName) {
     const feedNodes = Array.from(document.querySelectorAll([
       '#dashboard .TimelineItem',
@@ -332,6 +341,10 @@
         const createdAt = timeEl?.getAttribute('datetime') || timeEl?.dateTime || '';
 
         const repoLink = node.querySelector('a[data-hovercard-type="repository"], a[href*="/"][href*="/commit/"]');
+        const commitLink = node.querySelector('a[href*="/commit/"]');
+        const hasEventSignal = Boolean(actorLink || timeEl || repoLink || commitLink);
+        if (!hasEventSignal || isDashboardDateSeparator(text)) return null;
+
         let repoName = '';
         if (repoLink) {
           try {
@@ -342,7 +355,6 @@
           }
         }
 
-        const commitLink = node.querySelector('a[href*="/commit/"]');
         const sha = commitLink ? compact(commitLink.textContent).slice(0, 7) : '';
         const commitMessage = node.querySelector('.markdown-title, .commit-desc, .wb-break-all')?.textContent
           || node.querySelector('p, .color-fg-muted + div')?.textContent
