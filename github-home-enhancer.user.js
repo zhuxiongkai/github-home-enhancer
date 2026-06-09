@@ -2,7 +2,7 @@
 // @name         GitHub 首页增强
 // @name:en      GitHub Home Enhancer
 // @namespace    https://github.com/zhuxiongkai/github-home-enhancer
-// @version      1.0.0
+// @version      1.0.1
 // @description  将 GitHub 登录首页重排为工作台式三栏动态首页，聚合仓库、动态和推荐内容。
 // @description:en Rebuilds the signed-in GitHub home page into a three-column workbench with repositories, activity, and recommendations.
 // @author       zhuxiongkai
