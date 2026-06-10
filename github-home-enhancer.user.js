@@ -2,7 +2,7 @@
 // @name         GitHub 首页增强
 // @name:en      GitHub Home Enhancer
 // @namespace    https://github.com/zhuxiongkai/github-home-enhancer
-// @version      1.0.1
+// @version      1.0.2
 // @description  将 GitHub 登录首页重排为工作台式三栏动态首页，聚合仓库、动态和推荐内容。
 // @description:en Rebuilds the signed-in GitHub home page into a three-column workbench with repositories, activity, and recommendations.
 // @author       zhuxiongkai
@@ -310,9 +310,15 @@
     const value = compact(text);
     if (!value) return false;
 
-    return /^(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{4}年\d{1,2}月\d{1,2}日?)$/i.test(value)
-      || /^[a-z]{3,9}\s+\d{1,2},?\s+\d{4}$/i.test(value)
-      || /^\d{1,2}\s+[a-z]{3,9}\s+\d{4}$/i.test(value);
+    return [
+      /\d{4}[-/]\d{1,2}[-/]\d{1,2}/gi,
+      /\d{4}年\d{1,2}月\d{1,2}日?/g,
+      /[a-z]{3,9}\s+\d{1,2},?\s+\d{4}/gi,
+      /\d{1,2}\s+[a-z]{3,9}\s+\d{4}/gi,
+    ].some((datePattern) => {
+      const matches = value.match(datePattern);
+      return matches?.length && !compact(value.replace(datePattern, ''));
+    });
   }
 
   function parseDashboardFeedItems(userName) {
@@ -342,7 +348,7 @@
 
         const repoLink = node.querySelector('a[data-hovercard-type="repository"], a[href*="/"][href*="/commit/"]');
         const commitLink = node.querySelector('a[href*="/commit/"]');
-        const hasEventSignal = Boolean(actorLink || timeEl || repoLink || commitLink);
+        const hasEventSignal = Boolean(actorLink || repoLink || commitLink);
         if (!hasEventSignal || isDashboardDateSeparator(text)) return null;
 
         let repoName = '';

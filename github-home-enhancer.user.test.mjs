@@ -186,6 +186,12 @@ function loadHarness(feedNodes) {
 }
 
 const dateOnlyTimelineItem = timelineNode('2026年6月9日');
+const dateTimelineItemWithTime = timelineNode('2026年6月10日 2026年6月10日', {
+  'relative-time': textNode('2026年6月10日', { attributes: { datetime: '2026-06-10T05:00:00Z' } }),
+});
+const isoDateTimelineItemWithTime = timelineNode('2026-06-10 2026-06-10', {
+  'relative-time': textNode('2026-06-10', { attributes: { datetime: '2026-06-10T06:00:00Z' } }),
+});
 const pushTimelineItem = timelineNode(
   'zhuxiongkai pushed to main in zhuxiongkai/github-home-enhancer 533e3f1 Enhance GitHub Home Enhancer',
   {
@@ -202,12 +208,19 @@ const pushTimelineItem = timelineNode(
   },
 );
 
-const { parseDashboardFeedItems } = loadHarness([dateOnlyTimelineItem, pushTimelineItem]);
+const { parseDashboardFeedItems } = loadHarness([
+  dateOnlyTimelineItem,
+  dateTimelineItemWithTime,
+  isoDateTimelineItemWithTime,
+  pushTimelineItem,
+]);
 const parsedDashboardItems = parseDashboardFeedItems('zhuxiongkai');
 
 assert.equal(parsedDashboardItems.length, 1);
 assert.equal(parsedDashboardItems[0].sha, '533e3f1');
 assert.equal(parsedDashboardItems[0].title, 'zhuxiongkai/github-home-enhancer / main');
 assert.doesNotMatch(parsedDashboardItems.map((item) => item.title).join('\n'), /^2026年6月9日$/m);
+assert.doesNotMatch(parsedDashboardItems.map((item) => item.title).join('\n'), /^2026年6月10日/m);
+assert.doesNotMatch(parsedDashboardItems.map((item) => item.title).join('\n'), /^2026-06-10/m);
 
 console.log('github-home-enhancer userscript contract ok');
